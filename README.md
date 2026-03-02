@@ -48,3 +48,11 @@ ss init                  # first-time setup
 
 - Node.js
 - Zero external dependencies
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+[中文](README_ZH.md)
