@@ -1,0 +1,8 @@
+{
+  "name": "ssh-swap",
+  "version": "1.0.0",
+  "description": "SSH key switcher CLI for multiple GitHub accounts",
+  "bin": {
+    "ssh-swap": "./bin/ssh-swap"
+  }
+}

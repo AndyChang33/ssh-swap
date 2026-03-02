@@ -1,0 +1,257 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const readline = require('readline');
+
+const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
+
+function loadConfig() {
+  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+}
+
+function saveConfig(config) {
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
+}
+
+function resolvePath(p) {
+  if (p.startsWith('~/')) return path.join(process.env.HOME, p.slice(2));
+  return path.resolve(p);
+}
+
+function run(cmd, opts = {}) {
+  try {
+    return execSync(cmd, { encoding: 'utf8', stdio: opts.stdio || 'pipe', ...opts }).trim();
+  } catch (e) {
+    if (opts.ignoreError) return e.stdout ? e.stdout.trim() : '';
+    throw e;
+  }
+}
+
+// ── commands ──
+
+function cmdList() {
+  const { keys } = loadConfig();
+  const names = Object.keys(keys);
+  if (!names.length) { console.log('No keys configured.'); return; }
+  const maxLen = Math.max(...names.map(n => n.length));
+  for (const name of names) {
+    const k = keys[name];
+    console.log(`  ${name.padEnd(maxLen)}  ${k.path}  (${k.email})`);
+  }
+}
+
+function cmdCurrent() {
+  const out = run('ssh-add -l', { ignoreError: true });
+  if (!out || out.includes('no identities')) {
+    console.log('No SSH keys loaded.');
+    return;
+  }
+  const { keys } = loadConfig();
+  const loaded = out.split('\n');
+  for (const line of loaded) {
+    // ssh-add -l 输出格式: bits hash comment (type)
+    const parts = line.split(/\s+/);
+    const comment = parts[2] || '';
+    let matched = false;
+    for (const [name, k] of Object.entries(keys)) {
+      // match by file path or by email in comment
+      if (resolvePath(k.path) === resolvePath(comment) || k.email === comment) {
+        console.log(`  ${name}  ${k.path}  (${k.email})`);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched && comment) {
+      console.log(`  (unknown)  ${comment}`);
+    }
+  }
+}
+
+function cmdUse(name) {
+  const { keys } = loadConfig();
+  if (!keys[name]) {
+    console.error(`Key "${name}" not found. Use "ss list" to see available keys.`);
+    process.exit(1);
+  }
+  const keyPath = resolvePath(keys[name].path);
+  if (!fs.existsSync(keyPath)) {
+    console.error(`Key file not found: ${keyPath}`);
+    process.exit(1);
+  }
+
+  console.log(`Switching to ${name} ...`);
+  run('ssh-add -D', { ignoreError: true });
+  run(`ssh-add ${keyPath}`);
+  console.log(`Key loaded: ${keys[name].path}`);
+
+  console.log('Testing connection ...');
+  const testOut = run('ssh -T git@github.com -o StrictHostKeyChecking=no 2>&1', { ignoreError: true });
+  console.log(testOut);
+}
+
+function cmdAdd(name, keyPath) {
+  if (!name || !keyPath) {
+    console.error('Usage: ss add <name> <path>');
+    process.exit(1);
+  }
+  const config = loadConfig();
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.question('Email (optional): ', (email) => {
+    rl.close();
+    config.keys[name] = { path: keyPath, email: email || '' };
+    saveConfig(config);
+    console.log(`Added "${name}" → ${keyPath}`);
+  });
+}
+
+function cmdRemove(name) {
+  if (!name) { console.error('Usage: ss remove <name>'); process.exit(1); }
+  const config = loadConfig();
+  if (!config.keys[name]) {
+    console.error(`Key "${name}" not found.`);
+    process.exit(1);
+  }
+  delete config.keys[name];
+  saveConfig(config);
+  console.log(`Removed "${name}".`);
+}
+
+// ── scan ──
+
+function cmdScan() {
+  const sshDir = path.join(process.env.HOME, '.ssh');
+  const files = fs.readdirSync(sshDir);
+  const config = loadConfig();
+  const knownPaths = new Set(Object.values(config.keys).map(k => resolvePath(k.path)));
+
+  // find private keys: has matching .pub, skip known files
+  const skip = new Set(['config', 'known_hosts', 'known_hosts.old', 'authorized_keys', 'environment']);
+  const found = [];
+  for (const f of files) {
+    if (f.endsWith('.pub') || skip.has(f)) continue;
+    const full = path.join(sshDir, f);
+    if (!fs.statSync(full).isFile()) continue;
+    if (knownPaths.has(full)) continue;
+    // peek first line to confirm it's a private key
+    const head = fs.readFileSync(full, 'utf8').slice(0, 80);
+    if (!head.includes('PRIVATE KEY') && !head.includes('OPENSSH')) continue;
+    // try to extract email from .pub comment
+    let email = '';
+    const pubPath = full + '.pub';
+    if (fs.existsSync(pubPath)) {
+      const pubContent = fs.readFileSync(pubPath, 'utf8').trim();
+      const parts = pubContent.split(/\s+/);
+      if (parts.length >= 3) email = parts[parts.length - 1];
+    }
+    found.push({ file: f, path: `~/.ssh/${f}`, email });
+  }
+
+  if (!found.length) {
+    console.log('No new keys found in ~/.ssh/');
+    return;
+  }
+
+  console.log(`Found ${found.length} key(s) not in config:\n`);
+  for (const k of found) {
+    console.log(`  ${k.path}${k.email ? '  (' + k.email + ')' : ''}`);
+  }
+
+  // interactive: add them one by one
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  let i = 0;
+  function next() {
+    if (i >= found.length) { rl.close(); console.log('\nDone.'); return; }
+    const k = found[i];
+    const suggest = k.file.replace(/^id_(rsa|ed25519|ecdsa)_?/, '').replace(/^id_/, '') || k.file;
+    rl.question(`\nAdd ${k.path}? Name [${suggest}] (enter=add, s=skip): `, (ans) => {
+      if (ans === 's' || ans === 'S') { i++; next(); return; }
+      const name = ans.trim() || suggest;
+      config.keys[name] = { path: k.path, email: k.email };
+      saveConfig(config);
+      console.log(`  Added "${name}" → ${k.path}`);
+      i++;
+      next();
+    });
+  }
+  next();
+}
+
+// ── interactive menu ──
+
+function interactiveMenu() {
+  const { keys } = loadConfig();
+  const names = Object.keys(keys);
+  if (!names.length) { console.log('No keys configured.'); return; }
+
+  let selected = 0;
+
+  function render() {
+    // 移动光标到菜单顶部重绘
+    process.stdout.write(`\x1b[${names.length}A\x1b[0J`);
+    for (let i = 0; i < names.length; i++) {
+      const k = keys[names[i]];
+      const marker = i === selected ? '\x1b[36m❯\x1b[0m' : ' ';
+      const label = i === selected ? `\x1b[36m${names[i]}\x1b[0m` : names[i];
+      console.log(`  ${marker} ${label}  ${k.email}`);
+    }
+  }
+
+  console.log('\x1b[1mSelect SSH key:\x1b[0m');
+  // 先打印占位行
+  for (let i = 0; i < names.length; i++) {
+    const k = keys[names[i]];
+    const marker = i === selected ? '\x1b[36m❯\x1b[0m' : ' ';
+    const label = i === selected ? `\x1b[36m${names[i]}\x1b[0m` : names[i];
+    console.log(`  ${marker} ${label}  ${k.email}`);
+  }
+
+  if (!process.stdin.isTTY) {
+    console.error('Not a TTY, cannot show interactive menu. Use "ss use <name>" instead.');
+    process.exit(1);
+  }
+
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+
+  process.stdin.on('data', (key) => {
+    if (key === '\x03' || key === 'q') { // ctrl-c or q
+      process.stdin.setRawMode(false);
+      process.stdout.write('\n');
+      process.exit(0);
+    }
+    if (key === '\x1b[A' || key === 'k') { // up
+      selected = (selected - 1 + names.length) % names.length;
+      render();
+    } else if (key === '\x1b[B' || key === 'j') { // down
+      selected = (selected + 1) % names.length;
+      render();
+    } else if (key === '\r' || key === '\n') { // enter
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      process.stdout.write('\n');
+      cmdUse(names[selected]);
+    }
+  });
+}
+
+// ── main ──
+
+const [,, cmd, ...args] = process.argv;
+
+switch (cmd) {
+  case 'list':    cmdList(); break;
+  case 'use':     args[0] ? cmdUse(args[0]) : interactiveMenu(); break;
+  case 'current': cmdCurrent(); break;
+  case 'add':     cmdAdd(args[0], args[1]); break;
+  case 'remove':  cmdRemove(args[0]); break;
+  case 'scan':    cmdScan(); break;
+  case undefined:  interactiveMenu(); break;
+  default:
+    console.error(`Unknown command: ${cmd}`);
+    console.log('Usage: ss [list|use|current|add|remove|scan]');
+    process.exit(1);
+}

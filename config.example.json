@@ -1,0 +1,6 @@
+{
+  "keys": {
+    "personal": { "path": "~/.ssh/id_ed25519", "email": "you@example.com" },
+    "work": { "path": "~/.ssh/id_rsa_work", "email": "you@company.com" }
+  }
+}
