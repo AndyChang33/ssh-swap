@@ -121,13 +121,11 @@ function cmdRemove(name) {
 
 // ── scan ──
 
-function cmdScan() {
+function scanKeys(config) {
   const sshDir = path.join(process.env.HOME, '.ssh');
   const files = fs.readdirSync(sshDir);
-  const config = loadConfig();
   const knownPaths = new Set(Object.values(config.keys).map(k => resolvePath(k.path)));
 
-  // find private keys: has matching .pub, skip known files
   const skip = new Set(['config', 'known_hosts', 'known_hosts.old', 'authorized_keys', 'environment']);
   const found = [];
   for (const f of files) {
@@ -135,10 +133,8 @@ function cmdScan() {
     const full = path.join(sshDir, f);
     if (!fs.statSync(full).isFile()) continue;
     if (knownPaths.has(full)) continue;
-    // peek first line to confirm it's a private key
     const head = fs.readFileSync(full, 'utf8').slice(0, 80);
     if (!head.includes('PRIVATE KEY') && !head.includes('OPENSSH')) continue;
-    // try to extract email from .pub comment
     let email = '';
     const pubPath = full + '.pub';
     if (fs.existsSync(pubPath)) {
@@ -148,22 +144,23 @@ function cmdScan() {
     }
     found.push({ file: f, path: `~/.ssh/${f}`, email });
   }
+  return found;
+}
 
+function promptAddKeys(config, found, cb) {
   if (!found.length) {
     console.log('No new keys found in ~/.ssh/');
+    if (cb) cb();
     return;
   }
-
   console.log(`Found ${found.length} key(s) not in config:\n`);
   for (const k of found) {
     console.log(`  ${k.path}${k.email ? '  (' + k.email + ')' : ''}`);
   }
-
-  // interactive: add them one by one
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let i = 0;
   function next() {
-    if (i >= found.length) { rl.close(); console.log('\nDone.'); return; }
+    if (i >= found.length) { rl.close(); console.log('\nDone.'); if (cb) cb(); return; }
     const k = found[i];
     const suggest = k.file.replace(/^id_(rsa|ed25519|ecdsa)_?/, '').replace(/^id_/, '') || k.file;
     rl.question(`\nAdd ${k.path}? Name [${suggest}] (enter=add, s=skip): `, (ans) => {
@@ -177,6 +174,62 @@ function cmdScan() {
     });
   }
   next();
+}
+
+function cmdScan() {
+  const config = loadConfig();
+  const found = scanKeys(config);
+  promptAddKeys(config, found);
+}
+
+// ── init ──
+
+function cmdInit() {
+  // 1. config.json
+  if (fs.existsSync(CONFIG_PATH)) {
+    console.log('Already initialized. Use "ss scan" to discover new keys.');
+    return;
+  }
+  const config = { keys: {} };
+  saveConfig(config);
+  console.log('Created config.json');
+
+  // 2. scan ~/.ssh/
+  const found = scanKeys(config);
+  promptAddKeys(config, found, () => {
+    // 3. add alias to shell rc
+    setupAlias();
+  });
+}
+
+function setupAlias() {
+  const binPath = path.resolve(__dirname, 'ssh-swap');
+  const aliasLine = `alias ss="node ${binPath}"`;
+
+  // detect shell rc file
+  const shell = process.env.SHELL || '';
+  let rcFile;
+  if (shell.includes('zsh')) rcFile = path.join(process.env.HOME, '.zshrc');
+  else if (shell.includes('bash')) {
+    const bashrc = path.join(process.env.HOME, '.bashrc');
+    const profile = path.join(process.env.HOME, '.bash_profile');
+    rcFile = fs.existsSync(bashrc) ? bashrc : profile;
+  } else {
+    console.log(`\nAdd this alias to your shell rc manually:\n  ${aliasLine}`);
+    return;
+  }
+
+  // check if already exists
+  if (fs.existsSync(rcFile)) {
+    const content = fs.readFileSync(rcFile, 'utf8');
+    if (content.includes('alias ss=')) {
+      console.log(`\nAlias already exists in ${rcFile.replace(process.env.HOME, '~')}`);
+      return;
+    }
+  }
+
+  fs.appendFileSync(rcFile, `\n${aliasLine}\n`);
+  console.log(`\nAdded alias to ${rcFile.replace(process.env.HOME, '~')}. Run "source ${rcFile.replace(process.env.HOME, '~')}" or open a new terminal.`);
 }
 
 // ── interactive menu ──
@@ -249,9 +302,10 @@ switch (cmd) {
   case 'add':     cmdAdd(args[0], args[1]); break;
   case 'remove':  cmdRemove(args[0]); break;
   case 'scan':    cmdScan(); break;
+  case 'init':    cmdInit(); break;
   case undefined:  interactiveMenu(); break;
   default:
     console.error(`Unknown command: ${cmd}`);
-    console.log('Usage: ss [list|use|current|add|remove|scan]');
+    console.log('Usage: ss [init|list|use|current|add|remove|scan]');
     process.exit(1);
 }
