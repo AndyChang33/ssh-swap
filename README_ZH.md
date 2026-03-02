@@ -1,6 +1,7 @@
 # ssh-swap
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) · [English](README.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<br>[English](README.md)
 
 快速切换多个 SSH 密钥的 CLI 工具（适用于多个 GitHub 账号）。
 
