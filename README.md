@@ -1,5 +1,7 @@
 # ssh-swap
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 CLI tool to quickly switch between multiple SSH keys (e.g. multiple GitHub accounts).
 
 ## Install
