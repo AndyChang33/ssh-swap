@@ -1,6 +1,6 @@
 # ssh-swap
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) · [中文](README_ZH.md)
 
 CLI tool to quickly switch between multiple SSH keys (e.g. multiple GitHub accounts).
 
@@ -52,7 +52,3 @@ ss init                  # first-time setup
 ## License
 
 [MIT](LICENSE)
-
----
-
-[中文](README_ZH.md)
